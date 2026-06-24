@@ -41,7 +41,7 @@ Manage subscriptions, proxy groups, latency tests, system proxy, and TUN mode fr
 | **Network modes** | **System** (proxy) and **TUN** (full-tunnel) with mutual exclusion |
 | **Interfaces** | Textual TUI · Web UI on `:7887` · CLI for automation |
 
-Runtime data stays under `.runtime/` by default — isolated from Clash Verge and other local clients.
+Runtime data stays under `.runtime/` by default — isolated from Clash Verge and other local clients. On first start, GeoIP / GeoSite databases from `vendor/geodata/` are copied into the config directory so Mihomo does not need to download them from GitHub.
 
 ---
 
@@ -160,6 +160,7 @@ ClashTX/
 │   └── system/             # Service, proxy, TUN, network
 ├── vendor/
 │   ├── mihomo/             # Bundled Mihomo core
+│   ├── geodata/            # Bundled GeoIP / GeoSite databases
 │   └── tun/                # TUN setup scripts
 └── .runtime/               # Config, logs, pid (default)
 ```

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clashtx.config import ConfigStore
-from clashtx.core import CoreManager
+from clashtx.core import CoreManager, ensure_geodata
 
 SERVICE_NAME = "clashtx.service"
 
@@ -73,6 +73,7 @@ class ServiceManager:
         return process.pid
 
     def ensure_runtime_config(self) -> None:
+        ensure_geodata(self.store.paths.config_dir)
         try:
             from clashtx.subscription import SubscriptionManager
 
@@ -247,6 +248,7 @@ def _base_mihomo_config(config) -> dict:
         "allow-lan": False,
         "mode": {"rule": "rule", "global": "global", "direct": "direct"}[config.proxy_mode],
         "log-level": "info",
+        "geo-auto-update": False,
         "external-controller": config.external_controller,
         "secret": config.secret,
         "tun": {

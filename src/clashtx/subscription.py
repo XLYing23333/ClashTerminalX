@@ -129,6 +129,7 @@ class SubscriptionManager:
             {
                 "mixed-port": app_config.mixed_port,
                 "mode": app_config.proxy_mode,
+                "geo-auto-update": False,
                 "external-controller": app_config.external_controller,
                 "secret": app_config.secret,
                 "tun": {

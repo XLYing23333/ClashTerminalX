@@ -40,7 +40,7 @@
 | **网络模式** | **System**（系统代理）与 **TUN**（全局隧道），互斥切换 |
 | **界面** | Textual TUI · Web UI（`:7887`）· CLI 自动化 |
 
-运行时数据默认存放在 `.runtime/`，与 Clash Verge 及其他本地 Clash 客户端隔离。
+运行时数据默认存放在 `.runtime/`，与 Clash Verge 及其他本地 Clash 客户端隔离。首次启动时会自动把 `vendor/geodata/` 中的 GeoIP / GeoSite 数据库复制到配置目录，避免从 GitHub 下载失败。
 
 ---
 
@@ -159,6 +159,7 @@ ClashTX/
 │   └── system/             # 服务、代理、TUN、网络
 ├── vendor/
 │   ├── mihomo/             # 内置 Mihomo 核心
+│   ├── geodata/            # 内置 GeoIP / GeoSite 数据库
 │   └── tun/                # TUN 配置脚本
 └── .runtime/               # 配置、日志、PID（默认）
 ```
