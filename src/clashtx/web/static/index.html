@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClashTX</title>
+  <link rel="icon" href="/static/favicon.png" type="image/png" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-logo" src="/static/logo.png" alt="ClashTX" width="56" height="56" />
+        <div class="brand-copy">
+          <div class="brand-title">ClashTX</div>
+          <div class="brand-sub">ClashTerminalX</div>
+          <div class="brand-author">Cursor & XLY23333</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-tab="dashboard" data-i18n="nav.dashboard">Dashboard</button>
+        <button class="nav-item" data-tab="proxy" data-i18n="nav.proxy">Proxy</button>
+        <button class="nav-item" data-tab="subscriptions" data-i18n="nav.subscriptions">Subscriptions</button>
+        <button class="nav-item" data-tab="nodes" data-i18n="nav.nodes">Nodes</button>
+      </nav>
+      <div class="sidebar-footer" data-i18n="footer">Cursor & XLY23333 · Web UI</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 id="page-title">Dashboard</h1>
+        <div class="topbar-actions">
+          <button id="lang-toggle" class="btn ghost icon-btn" type="button" aria-label="Switch language">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4.545 6.714 4.11 8H3l1.862-5h1.284L8 8H6.833l-.435-1.286H4.545zm1.634-.736L5.5 3.956h-.049l-.679 2.022z"/>
+              <path d="M0 2a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v3h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3H2a2 2 0 0 1-2-2zm2-1a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm7.138 9.995q.876.24 1.694.713c.057-.081.113-.164.167-.249q.492-.774.835-1.746H8.361q.298.662.777 1.282M6 12.331a10 10 0 0 0 1.374-.93 6 6 0 0 1-.744-1.388h-.628zm2.774 1.707a9 9 0 0 1-1.797-.872 11 11 0 0 1-2.32 1.33.5.5 0 0 1-.316-.948 10 10 0 0 0 1.924-1.112 7 7 0 0 1-.93-1.478.5.5 0 0 1 .896-.443q.302.611.757 1.124.21-.205.392-.427.246-.3.443-.626a.5.5 0 0 1 .854.52q-.246.403-.55.776-.23.28-.49.535.603.366 1.285.592a.5.5 0 0 1-.148.979z"/>
+            </svg>
+          </button>
+          <button id="theme-toggle" class="btn ghost icon-btn" type="button" aria-label="Toggle theme"></button>
+          <button id="refresh-btn" class="btn ghost icon-btn" type="button" aria-label="Refresh">
+            <svg class="bi" viewBox="0 0 16 16" aria-hidden="true">
+              <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/>
+              <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div id="toast" class="toast hidden"></div>
+
+      <section id="tab-dashboard" class="tab active">
+        <div class="grid cards-2">
+          <div class="card">
+            <div class="card-label" data-i18n="dashboard.service">Service</div>
+            <div id="dash-active" class="badge">—</div>
+            <div class="meta" id="dash-mode">mode: —</div>
+            <div class="meta" id="dash-proxy">proxy: —</div>
+          </div>
+          <div class="card">
+            <div class="card-label" data-i18n="dashboard.selection">Selection</div>
+            <div class="meta" id="dash-sub">Subscription: —</div>
+            <div class="meta highlight" id="dash-node">Node: —</div>
+            <div class="meta" id="dash-core">Core: —</div>
+          </div>
+        </div>
+
+        <div class="card traffic-card">
+          <div class="traffic-row">
+            <span class="traffic-label up">▲ UP</span>
+            <div class="sparkline" id="spark-up"></div>
+            <span class="traffic-rate up" id="rate-up">0 B/s</span>
+          </div>
+          <div class="traffic-row">
+            <span class="traffic-label down">▼ DOWN</span>
+            <div class="sparkline" id="spark-down"></div>
+            <span class="traffic-rate down" id="rate-down">0 B/s</span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn success" data-action="service" data-value="start" data-i18n="action.start">Start</button>
+          <button class="btn danger" data-action="service" data-value="stop" data-i18n="action.stop">Stop</button>
+          <button class="btn warning" data-action="service" data-value="restart" data-i18n="action.restart">Restart</button>
+        </div>
+      </section>
+
+      <section id="tab-proxy" class="tab">
+        <div class="card">
+          <div id="network-mode-status" class="status-lines"></div>
+          <div class="actions">
+            <button class="btn primary" id="mode-system" data-i18n="proxy.systemMode">System Mode</button>
+            <button class="btn warning" id="mode-tun" data-i18n="proxy.tunMode">TUN Mode</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label" data-i18n="proxy.systemProxy">System Proxy</div>
+          <div id="proxy-status-lines" class="status-lines"></div>
+        </div>
+        <div class="form-grid cards-2">
+          <label><span data-i18n="proxy.host">Host</span><input id="proxy-host" type="text" placeholder="127.0.0.1" /></label>
+          <label><span data-i18n="proxy.port">Port</span><input id="proxy-port" type="number" placeholder="7897" /></label>
+          <label class="full"><span data-i18n="proxy.noProxy">No Proxy</span><input id="proxy-no-proxy" type="text" placeholder="localhost,127.0.0.1" /></label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="proxy-apply" data-i18n="action.apply">Apply</button>
+          <button class="btn success" id="proxy-enable" data-i18n="action.enable">Enable</button>
+          <button class="btn danger" id="proxy-disable" data-i18n="action.disable">Disable</button>
+          <button class="btn ghost" id="proxy-refresh" data-i18n="action.refresh">Refresh</button>
+        </div>
+        <div class="hint" id="proxy-hint"></div>
+        <div class="card">
+          <div class="card-label" data-i18n="proxy.tun">TUN</div>
+          <div id="tun-status-lines" class="status-lines"></div>
+        </div>
+      </section>
+
+      <section id="tab-subscriptions" class="tab">
+        <div class="form-grid cards-2">
+          <label><span data-i18n="subscriptions.name">Name</span><input id="sub-name" type="text" placeholder="Subscription name" data-i18n-placeholder="subscriptions.namePlaceholder" /></label>
+          <label><span data-i18n="subscriptions.url">URL</span><input id="sub-url" type="text" placeholder="https://..." /></label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="sub-save" data-i18n="subscriptions.addReplace">Add / Replace</button>
+          <button class="btn success" id="sub-activate" data-i18n="subscriptions.useSelected">Use Selected</button>
+          <button class="btn warning" id="sub-update" data-i18n="subscriptions.updateSelected">Update Selected</button>
+          <button class="btn primary" id="sub-update-all" data-i18n="subscriptions.updateAll">Update All</button>
+          <button class="btn danger" id="sub-delete" data-i18n="subscriptions.deleteSelected">Delete Selected</button>
+        </div>
+        <div id="sub-update-progress" class="hint"></div>
+        <div class="table-wrap card">
+          <table id="sub-table">
+            <thead>
+              <tr><th class="col-active" data-i18n="subscriptions.active">Active</th><th data-i18n="subscriptions.name">Name</th><th data-i18n="subscriptions.updated">Updated</th><th data-i18n="subscriptions.url">URL</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-nodes" class="tab">
+        <div class="toolbar">
+          <select id="mode-select">
+            <option value="rule" data-i18n="nodes.modeRule">Rule</option>
+            <option value="global" data-i18n="nodes.modeGlobal">Global</option>
+            <option value="direct" data-i18n="nodes.modeDirect">Direct</option>
+          </select>
+          <select id="sort-select">
+            <option value="latency" data-i18n="nodes.sortLatency">Latency</option>
+            <option value="a-z">A-Z</option>
+            <option value="z-a">Z-A</option>
+          </select>
+          <button class="btn primary" id="nodes-refresh" data-i18n="action.refresh">Refresh</button>
+          <button class="btn success" id="node-select" data-i18n="nodes.selectNode">Select Node</button>
+          <button class="btn warning" id="node-test" data-i18n="nodes.testSelected">Test Selected</button>
+          <button class="btn primary" id="node-test-all" data-i18n="nodes.testAll">Test All</button>
+        </div>
+        <div id="group-summary" class="hint"></div>
+        <div id="test-all-progress" class="hint"></div>
+        <div class="nodes-split">
+          <div class="card group-panel">
+            <div class="card-label" data-i18n="nodes.proxyGroups">Proxy Groups</div>
+            <div id="group-list" class="group-list"></div>
+          </div>
+          <div class="table-wrap card node-panel">
+            <table id="node-table">
+              <thead>
+                <tr><th data-i18n="nodes.node">Node</th><th data-i18n="nodes.delay">Delay</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

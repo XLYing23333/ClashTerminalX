@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clashtx"
+version = "0.1.0"
+description = "ClashTerminalX: terminal TUI and service manager for Mihomo/Clash on Linux servers."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Cursor & XLY23333" }]
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "platformdirs>=4.2",
+  "pyyaml>=6.0",
+  "rich>=13.7",
+  "textual>=0.70",
+  "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+]
+
+[project.scripts]
+clashtx = "clashtx.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
