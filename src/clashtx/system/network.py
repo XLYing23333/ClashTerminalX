@@ -61,5 +61,6 @@ class NetworkManager:
         env_path = self.proxy.enable()
         return (
             "System mode enabled. TUN disabled. "
-            f"System proxy enabled. Source: source {env_path}"
+            f"System proxy enabled. Source: source {env_path} "
+            "or source ./clashtx.sh source"
         )

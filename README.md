@@ -115,6 +115,9 @@ The Web UI provides the same core controls as the TUI, with bilingual EN / ç®€ä½
 | `sudo ./clashtx.sh status` | Show service status |
 | `sudo ./clashtx.sh mode system` | System proxy mode (disables TUN, enables proxy) |
 | `sudo ./clashtx.sh mode tun` | TUN mode (disables system proxy) |
+| `source ./clashtx.sh source` | Load `proxy.env` into the current shell |
+| `source ./clashtx.sh start` | Start core and auto-load `proxy.env` |
+| `source ./clashtx.sh restart` | Restart core and auto-load `proxy.env` |
 | `sudo ./clashtx.sh help` | Show help |
 
 ---

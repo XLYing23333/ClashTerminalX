@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
@@ -19,6 +20,7 @@ COMMANDS = {
     "help",
     "ui",
     "mode",
+    "source",
 }
 
 
@@ -47,6 +49,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "mode":
         return _run_mode(args[1:], console)
 
+    if command == "source":
+        return _run_source(console)
+
     from clashtx.config import ConfigStore
     from clashtx.system import ServiceManager
 
@@ -56,10 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if command == "start":
             _print_success(console, service.start())
+            _note_proxy_env(console)
         elif command == "stop":
             _print_success(console, service.stop())
         elif command == "restart":
             _print_success(console, service.restart())
+            _note_proxy_env(console)
         elif command == "status":
             status = service.status()
             active_style = "green" if status.active else "yellow"
@@ -88,6 +95,43 @@ def _run_mode(args: list[str], console) -> int:
         return 1
     _print_success(console, message)
     return 0
+
+
+def _run_source(console) -> int:
+    from clashtx.system.proxy import ProxyManager
+
+    env_file = ProxyManager().env_file
+    if not env_file.exists():
+        _print_error(
+            console,
+            f"Proxy env not found: {env_file}. Run: clashtx mode system",
+        )
+        return 1
+    console.print(
+        "Load proxy into the current shell with:\n"
+        f"  source {env_file}\n"
+        "Or, if you use clashtx.sh:\n"
+        "  source ./clashtx.sh source\n"
+        "  source ./clashtx.sh start"
+    )
+    return 0
+
+
+def _note_proxy_env(console) -> None:
+    if os.environ.get("CLASHTX_SHELL") == "1":
+        return
+
+    from clashtx.system.proxy import ProxyManager
+
+    env_file = ProxyManager().env_file
+    if not env_file.exists():
+        return
+    console.print(
+        "Load proxy into the current shell with:\n"
+        f"  source {env_file}\n"
+        "Or, if you use clashtx.sh:\n"
+        "  source ./clashtx.sh start"
+    )
 
 
 def _run_ui(args: list[str], console) -> int:
@@ -154,10 +198,11 @@ def _print_help(console) -> None:
     console.print("Usage: clashtx [command]\n")
     console.print("No command starts the Textual TUI.")
     console.print("Commands:")
-    console.print("  start        Start the Mihomo core service")
+    console.print("  start        Start the Mihomo core service (auto-loads proxy via clashtx.sh)")
     console.print("  stop         Stop the Mihomo core service")
-    console.print("  restart      Restart the Mihomo core service")
+    console.print("  restart      Restart the Mihomo core service (auto-loads proxy via clashtx.sh)")
     console.print("  status       Show service status")
     console.print("  ui           Start the Web UI (default: 0.0.0.0:7887)")
     console.print("  mode         Switch network mode: system | tun")
+    console.print("  source       Show how to load proxy.env into the current shell")
     console.print("  help         Show this help")
