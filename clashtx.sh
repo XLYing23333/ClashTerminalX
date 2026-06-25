@@ -55,6 +55,7 @@ fi
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 # Using your conda env
+# please execute `pip install -e .` first.
 # PYTHON_BIN="....../miniconda3/envs/....../bin/python"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
