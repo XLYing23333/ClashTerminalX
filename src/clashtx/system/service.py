@@ -10,6 +10,7 @@ from pathlib import Path
 
 from clashtx.config import ConfigStore
 from clashtx.core import CoreManager, ensure_geodata
+from clashtx.system.logs import rotate_log, trim_log
 
 SERVICE_NAME = "clashtx.service"
 
@@ -35,6 +36,10 @@ class ServiceManager:
     def service_path(self) -> Path:
         return Path.home() / ".config" / "systemd" / "user" / SERVICE_NAME
 
+    @property
+    def log_file(self) -> Path:
+        return self.store.paths.logs_dir / "mihomo.log"
+
     def install(self) -> Path:
         if not self.core.exists():
             raise RuntimeError(f"Mihomo core is missing: {self.core.binary_path}")
@@ -51,24 +56,30 @@ class ServiceManager:
 
     def start_direct(self) -> int:
         if self.is_direct_active():
+            trim_log(self.log_file)
             return self._read_pid() or 0
         if not self.core.exists():
             raise RuntimeError(f"Mihomo core is missing: {self.core.binary_path}")
+
         self.ensure_runtime_config()
-        log_file = self.store.paths.logs_dir / "mihomo.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = log_file.open("ab")
-        process = subprocess.Popen(
-            self.core.build_command(),
-            stdout=log_handle,
-            stderr=log_handle,
-            start_new_session=True,
-        )
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log(self.log_file)
+        log_handle = self.log_file.open("ab")
+        try:
+            process = subprocess.Popen(
+                self.core.build_command(),
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+            )
+        finally:
+            log_handle.close()
+
         self.store.paths.pid_file.write_text(str(process.pid), encoding="utf-8")
         if not self.wait_until_ready(timeout=8):
             raise RuntimeError(
                 f"Mihomo started with pid {process.pid}, but API did not become ready. "
-                f"Check log: {log_file}"
+                f"Check log: {self.log_file}"
             )
         return process.pid
 
@@ -77,7 +88,10 @@ class ServiceManager:
         try:
             from clashtx.subscription import SubscriptionManager
 
-            SubscriptionManager(self.store).generate_runtime_config()
+            generated = SubscriptionManager(self.store).generate_runtime_config()
+            if generated.get("log-level") != "warning":
+                generated["log-level"] = "warning"
+                self.store.write_generated_config(generated)
         except Exception:
             if not self.store.paths.generated_config.exists():
                 self.store.write_generated_config(_base_mihomo_config(self.store.load_config()))
@@ -179,12 +193,14 @@ class ServiceManager:
 
     def status(self) -> ServiceStatus:
         active = self.is_direct_active()
+        if active:
+            trim_log(self.log_file)
         pid = self._read_pid()
         text = (
             f"Direct process mode. PID: {pid}. "
             f"Core: {self.core.binary_path}. "
             f"API: {self.store.load_config().external_controller}. "
-            f"Log: {self.store.paths.logs_dir / 'mihomo.log'}"
+            f"Log: {self.log_file}"
         )
         return ServiceStatus(
             installed=self.core.exists(),
@@ -195,7 +211,6 @@ class ServiceManager:
 
     def _unit_text(self) -> str:
         command = " ".join(_quote(part) for part in self.core.build_command())
-        log_file = self.store.paths.logs_dir / "mihomo.log"
         return f"""[Unit]
 Description=ClashTX Mihomo Core
 After=network-online.target
@@ -207,8 +222,8 @@ Restart=on-failure
 RestartSec=3
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-StandardOutput=append:{log_file}
-StandardError=append:{log_file}
+StandardOutput=append:{self.log_file}
+StandardError=append:{self.log_file}
 
 [Install]
 WantedBy=default.target
@@ -247,7 +262,7 @@ def _base_mihomo_config(config) -> dict:
         "mixed-port": config.mixed_port,
         "allow-lan": False,
         "mode": {"rule": "rule", "global": "global", "direct": "direct"}[config.proxy_mode],
-        "log-level": "info",
+        "log-level": "warning",
         "geo-auto-update": False,
         "external-controller": config.external_controller,
         "secret": config.secret,
