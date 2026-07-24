@@ -21,6 +21,7 @@ COMMANDS = {
     "ui",
     "mode",
     "source",
+    "logs",
 }
 
 
@@ -42,15 +43,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "help":
         _print_help(console)
         return 0
-
     if command == "ui":
         return _run_ui(args[1:], console)
-
     if command == "mode":
         return _run_mode(args[1:], console)
-
     if command == "source":
         return _run_source(console)
+    if command == "logs":
+        return _run_logs(args[1:], console)
 
     from clashtx.config import ConfigStore
     from clashtx.system import ServiceManager
@@ -71,13 +71,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             status = service.status()
             active_style = "green" if status.active else "yellow"
             console.print("[bold cyan]STATUS[/]")
-            # console.print(f"Installed: {status.installed}")
             console.print(f"Active:  [{active_style}]{status.active}[/]")
             if status.text:
                 console.print(status.text)
     except Exception as exc:
         _print_error(console, str(exc))
         return 1
+    return 0
+
+
+def _run_logs(args: list[str], console) -> int:
+    if args != ["clean"]:
+        _print_error(console, "Usage: clashtx logs clean")
+        return 2
+
+    from clashtx.config import ConfigStore
+    from clashtx.system.logs import clear_logs
+
+    try:
+        previous_size, removed_backups = clear_logs(ConfigStore().paths.logs_dir)
+    except Exception as exc:
+        _print_error(console, str(exc))
+        return 1
+
+    _print_success(
+        console,
+        f"Cleared {previous_size} bytes from mihomo.log and removed "
+        f"{removed_backups} rotated backup(s).",
+    )
     return 0
 
 
@@ -204,5 +225,6 @@ def _print_help(console) -> None:
     console.print("  status       Show service status")
     console.print("  ui           Start the Web UI (default: 0.0.0.0:7887)")
     console.print("  mode         Switch network mode: system | tun")
+    console.print("  logs clean   Truncate mihomo.log and remove rotated backups")
     console.print("  source       Show how to load proxy.env into the current shell")
     console.print("  help         Show this help")
