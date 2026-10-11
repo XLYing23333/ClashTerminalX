@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from starlette.concurrency import run_in_threadpool
+
+from .auth import COOKIE, SESSION_SECONDS, WebAuth
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -11,6 +18,10 @@ from clashtx import AUTHOR
 from clashtx.controller import ClashTXController
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+class LoginPayload(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
 
 
 class SubscriptionPayload(BaseModel):
@@ -49,14 +60,70 @@ class NetworkModePayload(BaseModel):
     mode: str
 
 
-def create_app(controller: ClashTXController | None = None) -> FastAPI:
+def create_app(controller: ClashTXController | None = None, *, password: str | None = None, host: str = "127.0.0.1") -> FastAPI:
     ctl = controller or ClashTXController()
+    auth = WebAuth(ctl.store, password)
     app = FastAPI(
         title="ClashTX Web UI",
         description=f"ClashTerminalX web interface · {AUTHOR}",
         docs_url="/api/docs",
         redoc_url=None,
     )
+
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    allowed_hosts = {"localhost", "127.0.0.1", "::1", host} if loopback else None
+    app.state.auth = auth
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):
+        if allowed_hosts is not None and request.url.hostname not in allowed_hosts:
+            return JSONResponse({"detail": "Invalid Host header."}, status_code=400)
+        protected = request.url.path.startswith("/api/") or request.url.path == "/openapi.json"
+        if protected and request.url.path != "/api/auth/login":
+            try:
+                csrf = await run_in_threadpool(auth.session, request)
+                if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                    auth.check_csrf(request, csrf)
+            except HTTPException as exc:
+                return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        response = await call_next(request)
+        if protected:
+            response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        if request.url.path == "/api/docs":
+            # FastAPI's authenticated Swagger page uses its upstream CDN assets.
+            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; img-src 'self' https://fastapi.tiangolo.com; frame-ancestors 'none'"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def safe_validation(request: Request, exc: RequestValidationError):
+        if request.url.path == "/api/auth/login":
+            # Pydantic's default errors echo invalid inputs, including passwords.
+            return JSONResponse({"detail": "Password must contain 1–256 characters."}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
+    @app.post("/api/auth/login")
+    def login(payload: LoginPayload, request: Request):
+        token, csrf = auth.login(request, payload.password)
+        response = JSONResponse({"csrf_token": csrf})
+        response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True,
+                            samesite="strict", secure=request.url.scheme == "https")
+        return response
+
+    @app.get("/api/auth/session")
+    def session(request: Request):
+        return {"csrf_token": auth.session(request)}
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request):
+        auth.logout(request)
+        response = JSONResponse({"message": "Logged out."})
+        response.delete_cookie(COOKIE)
+        return response
 
     @app.get("/")
     def index() -> FileResponse:
@@ -244,7 +311,7 @@ def create_app(controller: ClashTXController | None = None) -> FastAPI:
     return app
 
 
-def run_ui(host: str = "0.0.0.0", port: int = 7887) -> None:
+def run_ui(host: str = "127.0.0.1", port: int = 7887, password: str | None = None) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    uvicorn.run(create_app(password=password, host=host), host=host, port=port, log_level="info")

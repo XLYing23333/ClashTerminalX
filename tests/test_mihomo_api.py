@@ -4,7 +4,7 @@ from clashtx.config import AppConfig, AppPaths, ConfigStore
 from clashtx.mihomo import MihomoAPI
 
 
-def test_select_node_saves_choice(monkeypatch, tmp_path):
+def test_select_node_saves_choice(monkeypatch, tmp_path, own_api):
     store = ConfigStore(
         AppPaths(
             config_dir=tmp_path / "config",
@@ -44,7 +44,7 @@ def test_select_node_saves_choice(monkeypatch, tmp_path):
     assert store.load_config().selected_nodes["良心云"] == "日本 节点"
 
 
-def test_reload_config_calls_configs_endpoint(monkeypatch, tmp_path):
+def test_reload_config_calls_configs_endpoint(monkeypatch, tmp_path, own_api):
     store = ConfigStore(
         AppPaths(
             config_dir=tmp_path / "config",

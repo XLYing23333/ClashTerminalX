@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clashtx.config import ConfigStore
+from clashtx.config.locking import config_transaction
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BUNDLED_TUN_DIR = PROJECT_ROOT / "vendor" / "tun"
@@ -79,6 +80,7 @@ class TunManager:
             message=message,
         )
 
+    @config_transaction
     def set_enabled(self, enabled: bool) -> bool:
         config = self.store.load_config()
         config.tun_enabled = enabled

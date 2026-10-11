@@ -9,10 +9,18 @@ const state = {
   upHistory: [],
   downHistory: [],
   trafficTimer: null,
+  authenticated: false,
+  csrf: null,
 };
 
 const i18n = {
   en: {
+    "auth.prompt": "Enter your Web password to continue.",
+    "auth.password": "Password",
+    "auth.login": "Log in",
+    "auth.logout": "Log out",
+    "auth.wrong": "Incorrect password.",
+    "auth.limited": "Too many failed logins. Try again in one minute.",
     "nav.dashboard": "Dashboard",
     "nav.proxy": "Proxy",
     "nav.subscriptions": "Subscriptions",
@@ -131,6 +139,12 @@ const i18n = {
     "subscriptions.updateEmpty": "No subscriptions to update.",
   },
   zh: {
+    "auth.prompt": "输入 Web 密码以继续。",
+    "auth.password": "密码",
+    "auth.login": "登录",
+    "auth.logout": "退出登录",
+    "auth.wrong": "密码错误。",
+    "auth.limited": "登录失败次数过多，请一分钟后重试。",
     "nav.dashboard": "仪表盘",
     "nav.proxy": "代理",
     "nav.subscriptions": "订阅",
@@ -339,16 +353,69 @@ function formatShanghaiTime(value) {
 }
 
 async function api(path, options = {}) {
+  const { headers = {}, ...rest } = options;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...rest,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(state.csrf ? { "X-CSRF-Token": state.csrf } : {}), ...headers },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && path !== "/api/auth/login") showLogin();
+    if (path === "/api/auth/login" && response.status === 401) throw new Error(t("auth.wrong"));
+    if (path === "/api/auth/login" && response.status === 429) throw new Error(t("auth.limited"));
     throw new Error(data.detail || response.statusText || "Request failed");
   }
   return data;
 }
+
+function showLogin() {
+  state.authenticated = false;
+  state.csrf = null;
+  state.selectedSub = state.selectedNode = state.nodeData = null;
+  state.upHistory = []; state.downHistory = [];
+  if (state.trafficTimer) clearInterval(state.trafficTimer);
+  state.trafficTimer = null;
+  document.getElementById("authenticated-app").hidden = true;
+  document.getElementById("login-screen").hidden = false;
+  document.getElementById("login-password").value = "";
+  document.getElementById("toast").classList.add("hidden");
+  document.querySelector("#sub-table tbody").replaceChildren();
+  document.getElementById("sub-url").value = "";
+}
+
+function showApp(csrf) {
+  state.csrf = csrf;
+  state.authenticated = true;
+  document.getElementById("login-screen").hidden = true;
+  document.getElementById("authenticated-app").hidden = false;
+  document.getElementById("login-password").value = "";
+  document.getElementById("login-error").textContent = "";
+  switchTab(state.tab);
+  startTrafficPolling();
+}
+
+async function restoreSession() {
+  try { const data = await api("/api/auth/session"); showApp(data.csrf_token); }
+  catch { showLogin(); }
+}
+
+window.addEventListener("pageshow", (event) => { if (event.persisted) restoreSession(); });
+document.getElementById("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = document.getElementById("login-submit");
+  button.disabled = true;
+  try {
+    const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password: document.getElementById("login-password").value }) });
+    showApp(data.csrf_token);
+  } catch (err) { document.getElementById("login-error").textContent = err.message; }
+  finally { button.disabled = false; }
+});
+document.getElementById("login-language").addEventListener("click", () => setLanguage(state.lang === "en" ? "zh" : "en"));
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  try { await api("/api/auth/logout", { method: "POST" }); showLogin(); }
+  catch (err) { toast(err.message, true); }
+});
 
 function toast(message, variant = "success") {
   const type = variant === true ? "error" : variant === false ? "success" : variant;
@@ -435,7 +502,7 @@ async function loadProxy() {
   document.getElementById("proxy-no-proxy").value = proxy.no_proxy;
 
   document.getElementById("network-mode-status").innerHTML =
-    `${t("proxy.activeMode")}: <span class="${data.mode === "tun" ? "ok" : "warn"}">${data.mode}</span>`;
+    `${t("proxy.activeMode")}: <span class="${data.mode === "tun" ? "ok" : "warn"}">${escapeHtml(data.mode)}</span>`;
 
   document.getElementById("tun-status-lines").innerHTML = `
     <div>TUN: <span class="${tun.enabled ? "ok" : "warn"}">${enabledDisabled(tun.enabled)}</span> | ${t("proxy.device")}: <span class="${tun.device_available ? "ok" : "warn"}">${yesNo(tun.device_available)}</span> | ${t("proxy.caps")}: <span class="${tun.capabilities_ready ? "ok" : "bad"}">${yesNo(tun.capabilities_ready)}</span></div>
@@ -448,20 +515,21 @@ async function loadProxy() {
   const gnomeClass = proxy.gnome_mode === "manual" ? "ok" : "warn";
   document.getElementById("proxy-status-lines").innerHTML = `
     <div>${t("proxy.status")}: <span class="${enabledClass}">${enabledDisabled(proxy.enabled)}</span></div>
-    <div>${t("proxy.mihomoListening")}: <span class="${listeningClass}">${yesNo(proxy.port_listening)}</span> at ${proxy.host}:${proxy.port}</div>
-    <div>${t("proxy.gnomeProxy")}: <span class="${gnomeClass}">${proxy.gnome_mode || t("common.unavailable")}</span> | ${t("proxy.envFile")}: ${proxy.env_exists ? t("common.present") : t("common.missing")}</div>
+    <div>${t("proxy.mihomoListening")}: <span class="${listeningClass}">${yesNo(proxy.port_listening)}</span> at ${escapeHtml(proxy.host)}:${escapeHtml(proxy.port)}</div>
+    <div>${t("proxy.gnomeProxy")}: <span class="${gnomeClass}">${escapeHtml(proxy.gnome_mode || t("common.unavailable"))}</span> | ${t("proxy.envFile")}: ${proxy.env_exists ? t("common.present") : t("common.missing")}</div>
     ${data.system_proxy_allowed ? "" : `<div class="warn">${t("proxy.disabledInTun")}</div>`}
   `;
   document.getElementById("proxy-enable").disabled = !data.system_proxy_allowed;
   document.getElementById("proxy-apply").disabled = !data.system_proxy_allowed;
   document.getElementById("proxy-hint").innerHTML =
-    `${t("proxy.serverShell")}: <code>source ${proxy.env_file}</code><br>` +
+    `${t("proxy.serverShell")}: <code>source ${escapeHtml(proxy.env_file)}</code><br>` +
     `${t("proxy.cli")}: <code>clashtx mode system</code> / <code>clashtx mode tun</code>`;
 }
 
 async function loadSubscriptions() {
   const rows = await api("/api/subscriptions");
   const tbody = document.querySelector("#sub-table tbody");
+  document.getElementById("sub-update-progress").textContent = [...new Set(rows.flatMap(row => row.warnings || []))].join("\n");
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const tr = document.createElement("tr");
@@ -596,6 +664,7 @@ function escapeHtml(value) {
 }
 
 async function refreshTab(tab = state.tab) {
+  if (!state.authenticated) return;
   if (tab === "dashboard") {
     await loadDashboard();
     await loadTraffic();
@@ -953,11 +1022,10 @@ async function startTestAllNodes() {
 function startTrafficPolling() {
   if (state.trafficTimer) clearInterval(state.trafficTimer);
   state.trafficTimer = setInterval(() => {
-    if (state.tab === "dashboard") loadTraffic();
+    if (state.authenticated && state.tab === "dashboard") loadTraffic();
   }, 1500);
 }
 
 applyTheme();
 applyTranslations();
-switchTab("dashboard");
-startTrafficPolling();
+restoreSession();

@@ -1,27 +1,38 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
+import uuid
+import warnings
+from collections import Counter
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from clashtx.config import AppConfig, ConfigStore, Subscription
+from clashtx.config.locking import config_transaction
+from clashtx.config.store import atomic_write
 
 
 class SubscriptionManager:
     def __init__(self, store: ConfigStore | None = None) -> None:
         self.store = store or ConfigStore()
 
+    @config_transaction
     def add_or_update(self, name: str, url: str) -> Subscription:
-        file_name = f"{_slug(name)}.yaml"
-        target = self.store.paths.subscriptions_dir / file_name
+        if not name.strip() or not url.strip():
+            raise ValueError("Subscription name and URL are required.")
+        config = self.store.load_config()
+        self._migrate(config)
+        existing = next((item for item in config.subscriptions if item.name == name), None)
+        file_name = existing.file if existing else f"{uuid.uuid4().hex}.yaml"
+        target = self._path(file_name)
         data = self.download(url)
         parsed = parse_subscription_yaml(data)
-        target.write_text(data, encoding="utf-8")
+        atomic_write(target, data)
 
-        config = self.store.load_config()
         subscription = Subscription(
             name=name,
             url=url,
@@ -38,13 +49,15 @@ class SubscriptionManager:
             self.generate_runtime_config(config)
         return subscription
 
+    @config_transaction
     def update(self, name: str) -> Subscription:
         config = self.store.load_config()
+        self._migrate(config)
         current = self.get(config, name)
         data = self.download(current.url)
         parsed = parse_subscription_yaml(data)
-        target = self.store.paths.subscriptions_dir / current.file
-        target.write_text(data, encoding="utf-8")
+        target = self._path(current.file)
+        atomic_write(target, data)
 
         updated = Subscription(
             name=current.name,
@@ -60,25 +73,65 @@ class SubscriptionManager:
             self.generate_runtime_config(config, updated, parsed)
         return updated
 
+    @config_transaction
     def activate(self, name: str) -> Subscription:
         config = self.store.load_config()
+        self._migrate(config)
         subscription = self.get(config, name)
         config.active_subscription = subscription.name
         self.store.save_config(config)
         self.generate_runtime_config(config, subscription)
         return subscription
 
+    @config_transaction
     def delete(self, name: str) -> None:
         config = self.store.load_config()
+        self._migrate(config)
         subscription = self.get(config, name)
         config.subscriptions = [item for item in config.subscriptions if item.name != name]
         if config.active_subscription == name:
             config.active_subscription = None
-        path = self.store.paths.subscriptions_dir / subscription.file
+        path = self._path(subscription.file)
         if path.exists():
             path.unlink()
         self.store.save_config(config)
         self.generate_runtime_config(config)
+
+    def _path(self, filename: str) -> Path:
+        if not filename or Path(filename).name != filename or not filename.endswith(".yaml"):
+            raise ValueError("Invalid subscription file path.")
+        path = self.store.paths.subscriptions_dir / filename
+        if path.is_symlink():
+            raise ValueError("Subscription files must not be symbolic links.")
+        return path
+
+    def _migrate(self, config: AppConfig) -> None:
+        old = [item for item in config.subscriptions if not re.fullmatch(r"[0-9a-f]{32}\.yaml", item.file)]
+        counts = Counter(item.file for item in config.subscriptions)
+        shared = [item for item in config.subscriptions if counts[item.file] > 1]
+        candidates = {id(item): item for item in old + shared}.values()
+        candidates = list(candidates)
+        original_files = {item.file for item in candidates}
+        if not candidates:
+            return
+        backup = self.store.paths.config_dir / ("subscription-backup-" + uuid.uuid4().hex)
+        backup.mkdir(mode=0o700)
+        atomic_write(backup / "config.json", json.dumps(config.to_dict(), ensure_ascii=False, indent=2))
+        for item in candidates:
+            path = self._path(item.file)
+            filename = f"{uuid.uuid4().hex}.yaml"
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
+                atomic_write(backup / item.file, content)
+                atomic_write(self._path(filename), content)
+            if counts[item.file] > 1:
+                message = f"Subscription {item.name}: shared file migrated; refresh this subscription to restore provider content. Overwritten history cannot be recovered."
+                config.migration_warnings.append(message)
+                warnings.warn(message, UserWarning, stacklevel=2)
+            item.file = filename
+        self.store.save_config(config)
+        for filename in original_files - {item.file for item in config.subscriptions}:
+            self._path(filename).unlink(missing_ok=True)
 
     def get(self, config: AppConfig, name: str) -> Subscription:
         for subscription in config.subscriptions:
@@ -109,6 +162,7 @@ class SubscriptionManager:
             response.raise_for_status()
             return response.text
 
+    @config_transaction
     def generate_runtime_config(
         self,
         config: AppConfig | None = None,
@@ -122,7 +176,7 @@ class SubscriptionManager:
 
         source = source or {}
         if active:
-            path = self.store.paths.subscriptions_dir / active.file
+            path = self._path(active.file)
             if path.exists() and not source:
                 source = _read_yaml(path)
 
@@ -145,6 +199,9 @@ class SubscriptionManager:
             }
         )
         source = self.apply_global_script(source)
+        # Managed endpoint/auth/logging cannot be replaced by a subscription or script.
+        source.update({"external-controller": app_config.external_controller,
+                       "secret": app_config.secret, "log-level": "warning"})
         self.store.write_generated_config(source)
         return source
 

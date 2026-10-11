@@ -1,84 +1,70 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Source safely: do not change the caller's shell options or exit its terminal.
+_clashtx_is_sourced() {
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    [[ "${ZSH_EVAL_CONTEXT:-}" == *:file* ]]
+  else
+    [[ "${BASH_SOURCE[0]}" != "$0" ]]
+  fi
+}
 
-_resolve_script_path() {
-  local script_path="${BASH_SOURCE[0]}"
-  while [[ -L "${script_path}" ]]; do
+_clashtx_main() {
+  local script_path
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    script_path="${(%):-%x}"
+  else
+    script_path="${BASH_SOURCE[0]}"
+  fi
+  while [[ -L "$script_path" ]]; do
     local script_dir
-    script_dir="$(cd "$(dirname "${script_path}")" && pwd)"
-    script_path="$(readlink "${script_path}")"
-    [[ "${script_path}" != /* ]] && script_path="${script_dir}/${script_path}"
+    script_dir="$(cd "$(dirname "$script_path")" && pwd)" || return
+    script_path="$(readlink "$script_path")" || return
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
   done
-  printf '%s\n' "${script_path}"
-}
-
-_is_sourced() {
-  [[ "${BASH_SOURCE[0]}" != "${0}" ]]
-}
-
-SCRIPT_PATH="$(_resolve_script_path)"
-ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
-CONFIG_DIR="${CLASHTX_CONFIG_DIR:-${ROOT_DIR}/.runtime/config}"
-PROXY_ENV="${CONFIG_DIR}/proxy.env"
-
-_load_proxy_env() {
-  if [[ ! -f "${PROXY_ENV}" ]]; then
-    return 0
-  fi
-  if _is_sourced; then
-    # shellcheck source=/dev/null
-    source "${PROXY_ENV}"
-    echo "Proxy environment loaded from ${PROXY_ENV}"
-    return 0
-  fi
-  echo "Load proxy into the current shell with:" >&2
-  echo "  source ${SCRIPT_PATH} start" >&2
-  echo "  source ${SCRIPT_PATH} source" >&2
-}
-
-if [[ "${1:-}" == "source" ]]; then
-  if [[ ! -f "${PROXY_ENV}" ]]; then
-    echo "ClashTX proxy env not found: ${PROXY_ENV}" >&2
-    echo "Enable system mode first: clashtx mode system" >&2
-    exit 1
-  fi
-  if ! _is_sourced; then
-    echo "Load proxy into the current shell with:" >&2
-    echo "  source ${SCRIPT_PATH} source" >&2
-    exit 1
-  fi
-  # shellcheck source=/dev/null
-  source "${PROXY_ENV}"
-  echo "Proxy environment loaded from ${PROXY_ENV}"
-  exit 0
-fi
-
-PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-# Using your conda env
-# please execute `pip install -e .` first.
-# PYTHON_BIN="....../miniconda3/envs/....../bin/python"
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "ClashTX virtualenv is missing. Run ./scripts/install.sh first." >&2
-  exit 1
-fi
-
-export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
-
-_run_python() {
-  export CLASHTX_SHELL=1
-  "${PYTHON_BIN}" -m clashtx "$@"
-}
-
-case "${1:-}" in
-  start|restart)
-    _run_python "$@"
-    exit_code=$?
-    if [[ ${exit_code} -eq 0 ]]; then
-      _load_proxy_env
+  local root_dir config_dir proxy_env python_bin result
+  root_dir="$(cd "$(dirname "$script_path")" && pwd)" || return
+  config_dir="${CLASHTX_CONFIG_DIR:-$root_dir/.runtime/config}"
+  proxy_env="$config_dir/proxy.env"
+  if [[ "${1:-}" == source ]]; then
+    if [[ ! -f "$proxy_env" ]]; then
+      echo "ClashTX proxy env not found: $proxy_env" >&2
+      return 1
     fi
-    exit "${exit_code}"
-    ;;
-esac
+    if ! _clashtx_is_sourced; then
+      echo "Load proxy with: source $script_path source" >&2
+      return 1
+    fi
+    source "$proxy_env" || return
+    echo "Proxy environment loaded from $proxy_env"
+    return 0
+  fi
+  python_bin="$root_dir/.venv/bin/python"
+  if [[ ! -x "$python_bin" ]]; then
+    echo "ClashTX virtualenv is missing. Run ./scripts/install.sh first." >&2
+    return 1
+  fi
+  if PYTHONPATH="$root_dir/src${PYTHONPATH:+:$PYTHONPATH}" CLASHTX_SHELL=1 "$python_bin" -m clashtx "$@"; then
+    result=0
+  else
+    result=$?
+  fi
+  if [[ $result -eq 0 && ( "${1:-}" == start || "${1:-}" == restart ) && -f "$proxy_env" ]]; then
+    if _clashtx_is_sourced; then
+      source "$proxy_env" || return
+      echo "Proxy environment loaded from $proxy_env"
+    else
+      echo "Load proxy with: source $script_path source" >&2
+    fi
+  fi
+  return "$result"
+}
 
-exec "${PYTHON_BIN}" -m clashtx "$@"
+if _clashtx_main "$@"; then
+  _clashtx_result=0
+else
+  _clashtx_result=$?
+fi
+if _clashtx_is_sourced; then
+  return "$_clashtx_result"
+fi
+exit "$_clashtx_result"

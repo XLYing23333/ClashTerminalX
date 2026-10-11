@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from clashtx.config import ConfigStore
+from clashtx.config.locking import config_transaction
 from clashtx.subscription import SubscriptionManager
 from clashtx.system.proxy import ProxyManager
 from clashtx.system.tun import TunManager
@@ -33,6 +34,7 @@ class NetworkManager:
             return config.network_mode
         return "tun" if config.tun_enabled else "system"
 
+    @config_transaction
     def set_mode(self, mode: NetworkMode) -> str:
         if mode == "tun":
             return self._enable_tun()

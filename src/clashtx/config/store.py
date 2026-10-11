@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import AppConfig, RuntimeState
+from .locking import file_lock
 
 APP_NAME = "clashtx"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -23,12 +24,16 @@ class AppPaths:
     cache_dir: Path
     subscriptions_dir: Path
     generated_config: Path
-    global_script: Path
     app_config: Path
     runtime_state: Path
     core_dir: Path
     logs_dir: Path
     pid_file: Path
+    global_script: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.global_script is None:
+            object.__setattr__(self, "global_script", self.config_dir / "global_script.py")
 
     @classmethod
     def defaults(cls) -> "AppPaths":
@@ -58,7 +63,7 @@ class AppPaths:
             self.core_dir,
             self.logs_dir,
         ):
-            directory.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
 class ConfigStore:
@@ -66,17 +71,24 @@ class ConfigStore:
         self.paths = paths or AppPaths.defaults()
         self.paths.ensure()
 
+    def transaction(self):
+        return file_lock(self.paths.config_dir / ".config.lock")
+
     def load_config(self) -> AppConfig:
-        return AppConfig.from_dict(_read_json(self.paths.app_config))
+        with self.transaction():
+            return AppConfig.from_dict(_read_json(self.paths.app_config))
 
     def save_config(self, config: AppConfig) -> None:
-        _write_json(self.paths.app_config, config.to_dict())
+        with self.transaction():
+            _write_json(self.paths.app_config, config.to_dict())
 
     def load_state(self) -> RuntimeState:
-        return RuntimeState.from_dict(_read_json(self.paths.runtime_state))
+        with self.transaction():
+            return RuntimeState.from_dict(_read_json(self.paths.runtime_state))
 
     def save_state(self, state: RuntimeState) -> None:
-        _write_json(self.paths.runtime_state, state.to_dict())
+        with self.transaction():
+            _write_json(self.paths.runtime_state, state.to_dict())
 
     def read_generated_config(self) -> dict[str, Any]:
         if not self.paths.generated_config.exists():
@@ -90,14 +102,29 @@ class ConfigStore:
         return value if isinstance(value, dict) else {}
 
     def write_generated_config(self, data: dict[str, Any]) -> None:
-        self.paths.generated_config.parent.mkdir(parents=True, exist_ok=True)
-        with self.paths.generated_config.open("w", encoding="utf-8") as file:
-            try:
-                import yaml
-            except ModuleNotFoundError:
-                file.write(_simple_yaml_dump(data))
-            else:
-                yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
+        try:
+            import yaml
+        except ModuleNotFoundError:
+            text = _simple_yaml_dump(data)
+        else:
+            text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        with self.transaction():
+            atomic_write(self.paths.generated_config, text)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            os.fchmod(file.fileno(), 0o600)
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -116,14 +143,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     with _JSON_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        with tmp_path.open("w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
-            file.write("\n")
-            file.flush()
-            os.fsync(file.fileno())
-        tmp_path.replace(path)
+        atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def _recover_json_object(raw: str, path: Path) -> dict[str, Any]:

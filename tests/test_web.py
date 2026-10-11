@@ -5,7 +5,7 @@ from clashtx.controller import ClashTXController
 from clashtx.web.app import create_app
 
 
-def test_web_dashboard_endpoint(tmp_path):
+def test_web_dashboard_endpoint(tmp_path, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -20,7 +20,7 @@ def test_web_dashboard_endpoint(tmp_path):
     )
     store = ConfigStore(paths)
     store.save_config(AppConfig(mixed_port=7897, proxy_mode="rule"))
-    client = TestClient(create_app(ClashTXController(store)))
+    client = logged_client(create_app(ClashTXController(store)))
 
     response = client.get("/api/dashboard")
 
@@ -31,7 +31,7 @@ def test_web_dashboard_endpoint(tmp_path):
     assert payload["mode"] == "rule"
 
 
-def test_web_network_mode_endpoint(tmp_path, monkeypatch):
+def test_web_network_mode_endpoint(tmp_path, monkeypatch, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -52,7 +52,7 @@ def test_web_network_mode_endpoint(tmp_path, monkeypatch):
         "set_network_mode",
         lambda self, mode: f"Switched to {mode}",
     )
-    client = TestClient(create_app(ctl))
+    client = logged_client(create_app(ctl))
 
     response = client.post("/api/network/mode", json={"mode": "tun"})
 
@@ -60,7 +60,7 @@ def test_web_network_mode_endpoint(tmp_path, monkeypatch):
     assert "tun" in response.json()["message"]
 
 
-def test_web_proxy_mode_rejects_network_mode_values(tmp_path, monkeypatch):
+def test_web_proxy_mode_rejects_network_mode_values(tmp_path, monkeypatch, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -73,7 +73,7 @@ def test_web_proxy_mode_rejects_network_mode_values(tmp_path, monkeypatch):
         logs_dir=tmp_path / "cache" / "logs",
         pid_file=tmp_path / "cache" / "mihomo.pid",
     )
-    client = TestClient(create_app(ClashTXController(ConfigStore(paths))))
+    client = logged_client(create_app(ClashTXController(ConfigStore(paths))))
 
     response = client.post("/api/mode", json={"mode": "system"})
 
@@ -81,7 +81,7 @@ def test_web_proxy_mode_rejects_network_mode_values(tmp_path, monkeypatch):
     assert "/api/network/mode" in response.json()["detail"]
 
 
-def test_web_refresh_all_subscriptions_endpoint(tmp_path, monkeypatch):
+def test_web_refresh_all_subscriptions_endpoint(tmp_path, monkeypatch, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -106,7 +106,7 @@ def test_web_refresh_all_subscriptions_endpoint(tmp_path, monkeypatch):
             "message": "done",
         },
     )
-    client = TestClient(create_app(ctl))
+    client = logged_client(create_app(ctl))
 
     response = client.post("/api/subscriptions/refresh-all")
 
@@ -116,7 +116,7 @@ def test_web_refresh_all_subscriptions_endpoint(tmp_path, monkeypatch):
     assert payload["failure_count"] == 1
 
 
-def test_web_index_page(tmp_path):
+def test_web_index_page(tmp_path, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -129,7 +129,7 @@ def test_web_index_page(tmp_path):
         logs_dir=tmp_path / "cache" / "logs",
         pid_file=tmp_path / "cache" / "mihomo.pid",
     )
-    client = TestClient(create_app(ClashTXController(ConfigStore(paths))))
+    client = logged_client(create_app(ClashTXController(ConfigStore(paths))))
 
     response = client.get("/")
 
@@ -138,7 +138,7 @@ def test_web_index_page(tmp_path):
     assert "/static/logo.png" in response.text
 
 
-def test_web_logo_assets(tmp_path):
+def test_web_logo_assets(tmp_path, logged_client):
     paths = AppPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
@@ -151,7 +151,7 @@ def test_web_logo_assets(tmp_path):
         logs_dir=tmp_path / "cache" / "logs",
         pid_file=tmp_path / "cache" / "mihomo.pid",
     )
-    client = TestClient(create_app(ClashTXController(ConfigStore(paths))))
+    client = logged_client(create_app(ClashTXController(ConfigStore(paths))))
 
     logo = client.get("/static/logo.png")
     favicon = client.get("/static/favicon.png")

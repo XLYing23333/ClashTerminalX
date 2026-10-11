@@ -157,9 +157,13 @@ def _note_proxy_env(console) -> None:
 
 def _run_ui(args: list[str], console) -> int:
     parser = argparse.ArgumentParser(prog="clashtx ui", add_help=True)
-    parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=7887, help="Listen port (default: 7887)")
+    parser.add_argument("--password", default=None, help="Permanently set the Web login password (initial default: 7897)")
     options = parser.parse_args(args)
+    if options.password is not None and not options.password:
+        _print_error(console, "Password cannot be empty.")
+        return 2
 
     from clashtx.web import run_ui
 
@@ -168,7 +172,7 @@ def _run_ui(args: list[str], console) -> int:
         f"ClashTX Web UI listening on http://{options.host}:{options.port}  ·  {AUTHOR}",
     )
     try:
-        run_ui(host=options.host, port=options.port)
+        run_ui(host=options.host, port=options.port, password=options.password)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
@@ -223,7 +227,7 @@ def _print_help(console) -> None:
     console.print("  stop         Stop the Mihomo core service")
     console.print("  restart      Restart the Mihomo core service (auto-loads proxy via clashtx.sh)")
     console.print("  status       Show service status")
-    console.print("  ui           Start the Web UI (default: 0.0.0.0:7887)")
+    console.print("  ui           Start the Web UI (default: 127.0.0.1:7887; --password changes login password)")
     console.print("  mode         Switch network mode: system | tun")
     console.print("  logs clean   Truncate mihomo.log and remove rotated backups")
     console.print("  source       Show how to load proxy.env into the current shell")

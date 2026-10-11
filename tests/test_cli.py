@@ -49,3 +49,13 @@ def test_source_command_shows_usage(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert str(env_file) in output
     assert "source ./clashtx.sh source" in output
+
+
+def test_ui_password_forwarded_and_localhost_default(monkeypatch):
+    from clashtx.cli import _run_ui, PlainConsole
+    calls = []
+    monkeypatch.setattr('clashtx.web.run_ui', lambda **kwargs: calls.append(kwargs))
+    assert _run_ui(['--password', 'new-secret'], PlainConsole()) == 0
+    assert calls == [{'host': '127.0.0.1', 'port': 7887, 'password': 'new-secret'}]
+    assert _run_ui(['--password', ''], PlainConsole()) == 2
+    assert len(calls) == 1

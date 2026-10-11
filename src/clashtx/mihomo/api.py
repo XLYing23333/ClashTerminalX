@@ -7,6 +7,10 @@ from urllib.parse import quote
 
 import httpx
 
+from clashtx.config.locking import config_transaction
+from clashtx.system.process import controller_address
+from clashtx.system.service import ServiceManager
+
 from clashtx.config import ConfigStore
 
 
@@ -47,6 +51,7 @@ class MihomoAPI:
         response.raise_for_status()
         return str(response.json().get("mode", "rule"))
 
+    @config_transaction
     def set_mode(self, mode: str) -> None:
         with self._client() as client:
             response = client.patch("/configs", json={"mode": mode})
@@ -95,6 +100,7 @@ class MihomoAPI:
                 )
         return groups
 
+    @config_transaction
     def select_node(self, group: str, node: str) -> None:
         group_path = quote(group, safe="")
         with self._client() as client:
@@ -114,9 +120,10 @@ class MihomoAPI:
         response.raise_for_status()
         delay = int(response.json().get("delay", -1))
         if persist:
-            state = self.store.load_state()
-            state.last_latency_ms[name] = delay
-            self.store.save_state(state)
+            with self.store.transaction():
+                state = self.store.load_state()
+                state.last_latency_ms[name] = delay
+                self.store.save_state(state)
         return delay
 
     def traffic_sample(self) -> tuple[int, int]:
@@ -131,10 +138,15 @@ class MihomoAPI:
         return 0, 0
 
     def _client(self, timeout: float = 15) -> httpx.Client:
+        ServiceManager(self.store).assert_api_owner()
+        config = self.store.load_config()
+        host, port = controller_address(config.external_controller)
+        self.base_url = f"http://{'[' + host + ']' if ':' in host else host}:{port}"
+        self.secret = config.secret
         headers = {}
         if self.secret:
             headers["Authorization"] = f"Bearer {self.secret}"
-        return httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
+        return httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout, trust_env=False)
 
 
 def _raise_for_status(response: httpx.Response) -> None:

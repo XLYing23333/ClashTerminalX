@@ -47,7 +47,7 @@
 ## 快速开始
 
 ```bash
-git clone <your-repo-url> ClashTX
+git clone https://github.com/XLYing23333/ClashTerminalX.git ClashTX
 cd ClashTX
 
 ./scripts/install.sh
@@ -102,12 +102,37 @@ Web UI 提供与 TUI 相同的核心控制能力，并支持 EN / 简体中文�
 
 ---
 
+
+### Web 登录与修改密码
+
+默认访问地址为 `http://127.0.0.1:7887`，首次登录密码为 **`7897`**。页面支持 EN / 简体中文登录与退出。全部管理 API、API 文档与 OpenAPI 都需要登录；会话有效期为 12 小时，服务重启或密码更改后旧会话失效。
+
+永久修改密码并启动 Web UI：
+
+```bash
+sudo ./clashtx.sh ui --password '你的新密码'
+```
+
+后续不带 `--password` 启动时沿用已保存的密码；重置密码也使用此参数。修改前请停止已有 Web 服务，再使用上述命令重启。认证文件只保存带随机盐的密码哈希，与 Mihomo 控制密钥分别存储，不会提交到 GitHub。
+
+Web 默认只监听本机。远程访问可使用 SSH 转发：
+
+```bash
+ssh -L 7887:127.0.0.1:7887 user@server
+```
+
+也可以显式绑定 `--host 0.0.0.0`；远程开放前请修改默认密码，并通过 HTTPS 反向代理保护密码与会话。登录错误每个 IP 每分钟最多 5 次，修改操作需要 CSRF 令牌。
+
+反向代理连接本机监听的 Web 服务时，请传递本机 Host（例如 `proxy_set_header Host 127.0.0.1;`），以通过 DNS 重绑定防护。
+
+---
+
 ## 命令一览
 
 | 命令 | 说明 |
 | --- | --- |
 | `sudo ./clashtx.sh` | 启动 Textual TUI |
-| `sudo ./clashtx.sh ui [--host HOST] [--port PORT]` | 启动 Web UI（默认 `:7887`） |
+| `sudo ./clashtx.sh ui [--host HOST] [--port PORT]` | 启动 Web UI（默认 `127.0.0.1:7887`；`--password` 修改密码） |
 | `sudo ./clashtx.sh start` | 启动 Mihomo 核心 |
 | `sudo ./clashtx.sh stop` | 停止 Mihomo 核心 |
 | `sudo ./clashtx.sh restart` | 重启 Mihomo 核心 |
@@ -153,7 +178,7 @@ ClashTX/
 ├── asset/LOGO.png          # 品牌 Logo（源文件）
 ├── asset/img-terminal.png  # 终端 TUI 截图
 ├── asset/img-webui.png     # Web UI 截图
-├── clashtx.sh              # 入口脚本（由 install.sh 生成）
+├── clashtx.sh              # 入口脚本（由 scripts/clashtx-entry.sh 复制）
 ├── scripts/install.sh
 ├── src/clashtx/            # 应用源码
 │   ├── tui/                # Textual TUI
@@ -182,6 +207,43 @@ ClashTX/
 | `CLASHTX_CACHE_DIR` | 日志与 PID 文件 |
 | `CLASHTX_CORE_PATH` | 自定义 Mihomo 二进制路径 |
 | `CLASHTX_TUN_DIR` | 自定义 TUN 工具目录 |
+
+---
+
+
+## 核心隔离与升级兼容
+
+- 新安装默认 Mihomo 控制地址为 `127.0.0.1:19090`，首次启动生成独立随机密钥；混合代理端口仍为 `7897`。已有显式控制地址保留，控制地址仅允许本机 IP 或 `localhost`。
+- 停止、重启与 API 操作验证核心 PID、启动时间、可执行文件、运行用户、配置参数和控制接口归属；不会接管其他代理。端口被占用或身份无法验证时拒绝操作。
+- 旧 PID 文件只有在核心身份完整验证后才会被采纳。升级不会自动重启已有核心；旧核心需要用户主动重启，才能启用新的后台日志限制。身份异常时先核实进程，避免盲目删除 PID 文件。
+- 订阅采用独立 UUID 文件名，支持中文名称。首次修改旧订阅时自动备份并迁移；发现多个订阅共享旧文件，会提示逐一更新订阅。迁移保留现存内容，不会自动下载，也无法恢复此前被覆盖的历史内容。
+- 配置、认证、运行身份与代理环境文件采用私有权限和原子写入；共享配置操作使用文件锁。全局脚本仍可调整规则等配置，但控制地址、控制密钥和日志级别由 ClashTX 管理。
+
+## 后台日志与故障节点
+
+核心由独立后台运行器启动，运行器持续收集 stdout / stderr。关闭 TUI、Web 页面或退出启动命令后，日志限制仍持续生效：
+
+- 当前 `mihomo.log` 最大 **20 MiB**。
+- 最多保留 **3** 个备份，每个最大 **20 MiB**，总量不超过 **80 MiB**。
+- 启动及订阅热加载统一使用 `warning`。坏节点的连接失败仍会留下警告，但日志不再无限增长。
+- 磁盘写入失败时丢弃无法保存的数据并继续读取核心输出，避免因日志写入错误阻塞代理；磁盘恢复后继续记录。
+
+手动清理日志（不停止核心）：
+
+```bash
+sudo ./clashtx.sh logs clean
+```
+
+日志轮转限制磁盘占用，不会自动替换手动选择的坏节点。请在 Nodes 页面切换到健康节点，或在订阅配置中使用自动选择 / 故障转移组。
+
+## 隔离测试
+
+```bash
+python3 -m pip install -e '.[dev]'
+python3 -m pytest -q
+```
+
+测试使用临时运行目录、进程内 Web 客户端、合成日志和模拟核心。隔离层拦截真实核心启动、进程信号、网络连接、桌面代理设置及权限工具，不修改已有代理。
 
 ---
 

@@ -39,8 +39,9 @@ class AppConfig:
     network_mode: NetworkMode = "system"
     tun_enabled: bool = False
     mixed_port: int = 7897
-    external_controller: str = "127.0.0.1:9090"
+    external_controller: str = "127.0.0.1:19090"
     secret: str = ""
+    migration_warnings: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AppConfig":
@@ -69,8 +70,9 @@ class AppConfig:
             network_mode=network_mode,
             tun_enabled=network_mode == "tun",
             mixed_port=_mixed_port(raw.get("mixed_port")),
-            external_controller=str(raw.get("external_controller", "127.0.0.1:9090")),
+            external_controller=str(raw.get("external_controller", "127.0.0.1:19090")),
             secret=str(raw.get("secret", "")),
+            migration_warnings=list(raw.get("migration_warnings", [])),
         )
 
     def __post_init__(self) -> None:

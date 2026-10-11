@@ -94,7 +94,8 @@ def test_update_subscription_does_not_change_active(tmp_path, monkeypatch):
     config = store.load_config()
     assert updated.name == "inactive"
     assert config.active_subscription == "active"
-    assert "name: new" in inactive_file.read_text(encoding="utf-8")
+    updated_file = store.paths.subscriptions_dir / updated.file
+    assert "name: new" in updated_file.read_text(encoding="utf-8")
 
 
 def test_add_or_update_subscription_does_not_change_active(tmp_path, monkeypatch):

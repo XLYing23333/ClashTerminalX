@@ -55,8 +55,6 @@ class CoreManager:
             "-ext-ctl",
             app_config.external_controller,
         ]
-        if app_config.secret:
-            command.extend(["-secret", app_config.secret])
         return command
 
     def ensure_tun_capabilities(self) -> None:

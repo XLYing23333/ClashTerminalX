@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from clashtx.config import ConfigStore
+from clashtx.config.locking import config_transaction
 from clashtx.core import CoreManager
 from clashtx.mihomo import MihomoAPI
 from clashtx.mihomo.api import ProxyGroup
@@ -258,6 +259,7 @@ class ClashTXController:
                 "url": item.url,
                 "updated_at": item.updated_at,
                 "active": item.name == config.active_subscription,
+                "warnings": config.migration_warnings,
             }
             for item in config.subscriptions
         ]
@@ -350,6 +352,7 @@ class ClashTXController:
             "rows": rows,
         }
 
+    @config_transaction
     def set_active_node_group(self, group_name: str) -> None:
         config = self.store.load_config()
         config.active_node_group = group_name
@@ -358,6 +361,7 @@ class ClashTXController:
     def set_mode(self, mode: str) -> None:
         self.api.set_mode(mode)
 
+    @config_transaction
     def set_sort_mode(self, sort_mode: str) -> None:
         config = self.store.load_config()
         config.sort_mode = sort_mode
@@ -433,9 +437,10 @@ class ClashTXController:
                     progress(completed, total, node_name)
 
         if latencies:
-            state = self.store.load_state()
-            state.last_latency_ms.update(latencies)
-            self.store.save_state(state)
+            with self.store.transaction():
+                state = self.store.load_state()
+                state.last_latency_ms.update(latencies)
+                self.store.save_state(state)
 
         fastest = None
         fastest_delay = None
@@ -545,6 +550,7 @@ class ClashTXController:
         payload["env_file"] = str(status.env_file)
         return payload
 
+    @config_transaction
     def apply_proxy(self, host: str, port: int, no_proxy: str) -> None:
         try:
             self.network.ensure_proxy_allowed()
@@ -574,6 +580,8 @@ class ClashTXController:
         return "System proxy disabled."
 
     def _reload_config_message(self) -> str:
+        if not self.service.status().active:
+            return "Config saved. Start the ClashTX core to apply it."
         try:
             self.api.reload_config()
             return "Mihomo config reloaded."

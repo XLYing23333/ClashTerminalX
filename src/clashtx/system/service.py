@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import signal
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from clashtx.config import ConfigStore
+from clashtx.config.locking import file_lock
+from clashtx.config.store import _write_json
 from clashtx.core import CoreManager, ensure_geodata
-from clashtx.system.logs import rotate_log, trim_log
+from clashtx.system.process import controller_address, is_core, matches, owns_listener, process_identity, process_exists
 
-SERVICE_NAME = "clashtx.service"
+SERVICE_NAME = 'clashtx.service'
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,269 +29,238 @@ class ServiceStatus:
 
 
 class ServiceManager:
-    def __init__(
-        self,
-        store: ConfigStore | None = None,
-        core: CoreManager | None = None,
-    ) -> None:
+    def __init__(self, store: ConfigStore | None = None, core: CoreManager | None = None):
         self.store = store or ConfigStore()
         self.core = core or CoreManager(self.store)
 
     @property
-    def service_path(self) -> Path:
-        return Path.home() / ".config" / "systemd" / "user" / SERVICE_NAME
-
-    @property
     def log_file(self) -> Path:
-        return self.store.paths.logs_dir / "mihomo.log"
+        return self.store.paths.logs_dir / 'mihomo.log'
 
-    def install(self) -> Path:
-        if not self.core.exists():
-            raise RuntimeError(f"Mihomo core is missing: {self.core.binary_path}")
-        self.ensure_runtime_config()
-        self.service_path.parent.mkdir(parents=True, exist_ok=True)
-        self.service_path.write_text(self._unit_text(), encoding="utf-8")
-        if _systemd_available():
-            _systemctl("daemon-reload")
-        return self.service_path
+    def _lock(self):
+        return file_lock(self.store.paths.cache_dir / '.service.lock')
+
+    def _record(self) -> dict | None:
+        try:
+            raw = self.store.paths.pid_file.read_text().strip()
+        except FileNotFoundError:
+            return None
+        try:
+            record = json.loads(raw)
+        except ValueError as exc:
+            raise RuntimeError('Invalid core identity file; refusing process operations.') from exc
+        if type(record) is int:
+            if record <= 1:
+                raise RuntimeError("Invalid core PID; refusing process operations.")
+            identity = process_identity(record)
+            if identity is None:
+                if process_exists(record):
+                    raise RuntimeError("Legacy core identity cannot be read; refusing process operations.")
+                return None
+            if not is_core(identity, self.core.binary_path, self.store.paths.generated_config):
+                raise RuntimeError('Legacy PID belongs to an unverified process; refusing to control it.')
+            args = identity['args']
+            try:
+                if args.count('-ext-ctl') != 1:
+                    raise ValueError('ambiguous controller')
+                controller = args[args.index('-ext-ctl') + 1]
+                controller_address(controller)
+            except (ValueError, IndexError) as exc:
+                raise RuntimeError('Legacy controller identity is invalid.') from exc
+            return {'version': 1, 'core': identity, 'runner': None, 'controller': controller}
+        if not isinstance(record, dict) or record.get('version') != 1 or not isinstance(record.get('core'), dict):
+            raise RuntimeError('Invalid core identity record; refusing process operations.')
+        for value in [record['core'], record.get('runner')]:
+            if value is None:
+                continue
+            if (not isinstance(value, dict) or type(value.get('pid')) is not int or value['pid'] <= 1
+                    or type(value.get('uid')) is not int or value['uid'] < 0
+                    or not isinstance(value.get('start_time'), str) or not value['start_time'].isdigit()
+                    or not isinstance(value.get('exe'), str) or not isinstance(value.get('args'), list)
+                    or not all(isinstance(argument, str) for argument in value['args'])):
+                raise RuntimeError('Invalid process identity fields; refusing process operations.')
+        if not isinstance(record.get('controller'), str):
+            raise RuntimeError('Invalid controller identity; refusing process operations.')
+        return record
+
+    def _verified_core(self, record: dict | None) -> bool:
+        if not record:
+            return False
+        identity = record.get('core')
+        return (matches(identity) and is_core(identity, self.core.binary_path,
+                                             self.store.paths.generated_config, record.get('controller')))
+
+    def is_direct_active(self) -> bool:
+        try:
+            return self._verified_core(self._record())
+        except RuntimeError:
+            return False
+
+    def _verified_runner(self, identity: dict | None) -> bool:
+        if not matches(identity) or identity['uid'] != os.getuid() or identity['exe'] != str(Path(sys.executable).resolve()):
+            return False
+        args = identity['args']
+        try:
+            return (args[args.index('-m') + 1] == 'clashtx.system.runner'
+                    and args.count('--config-dir') == 1
+                    and Path(args[args.index('--config-dir') + 1]).resolve() == self.store.paths.config_dir.resolve())
+        except (ValueError, IndexError):
+            return False
+
+    def assert_api_owner(self) -> None:
+        record = self._record()
+        config = self.store.load_config()
+        if not self._verified_core(record) or record['controller'] != config.external_controller:
+            raise RuntimeError('No verified ClashTX core is running; refusing controller access.')
+        if not owns_listener(record['core']['pid'], config.external_controller) or not self._verified_core(record):
+            raise RuntimeError('Controller listener does not belong to the ClashTX core.')
+
+    def ensure_runtime_config(self) -> None:
+        from clashtx.subscription import SubscriptionManager
+        with self.store.transaction():
+            config = self.store.load_config()
+            controller_address(config.external_controller)
+            if not config.secret:
+                config.secret = secrets.token_urlsafe(32)
+                self.store.save_config(config)
+            ensure_geodata(self.store.paths.config_dir)
+            SubscriptionManager(self.store).generate_runtime_config(config)
+
+    def _check_controller_free(self) -> None:
+        host, port = controller_address(self.store.load_config().external_controller)
+        try:
+            with socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET) as sock:
+                sock.bind((host, port))
+        except OSError as exc:
+            raise RuntimeError('Mihomo controller address is occupied or unavailable; existing services were not changed.') from exc
+
+    def start_direct(self) -> int:
+        with self._lock():
+            record = self._record()
+            if self._verified_core(record):
+                return record['core']['pid']
+            if record:
+                # A live runner or a reused PID must never be overwritten or killed.
+                if process_exists(record['core'].get('pid', 0)) or matches(record.get('runner')):
+                    raise RuntimeError('Stored process identity is inconsistent; refusing to start another core.')
+            if not self.core.exists():
+                raise RuntimeError(f'Mihomo core is missing: {self.core.binary_path}')
+            self._check_controller_free()
+            self.ensure_runtime_config()
+            self.store.paths.pid_file.unlink(missing_ok=True)
+            env = os.environ.copy()
+            env.update(CLASHTX_CONFIG_DIR=str(self.store.paths.config_dir.resolve()),
+                       CLASHTX_DATA_DIR=str(self.store.paths.data_dir.resolve()),
+                       CLASHTX_CACHE_DIR=str(self.store.paths.cache_dir.resolve()),
+                       CLASHTX_CORE_PATH=str(self.core.binary_path.resolve()))
+            source = str(Path(__file__).resolve().parents[2])
+            env['PYTHONPATH'] = source + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+            runner = subprocess.Popen([sys.executable, '-m', 'clashtx.system.runner', '--config-dir', str(self.store.paths.config_dir.resolve())],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      start_new_session=True, env=env)
+            runner_identity = process_identity(runner.pid)
+            if not self.wait_until_ready(timeout=8):
+                try:
+                    self.stop_direct()
+                finally:
+                    if matches(runner_identity):
+                        self._terminate_identity(runner_identity)
+                    try:
+                        runner.wait(timeout=6)
+                    except subprocess.TimeoutExpired:
+                        pass
+                raise RuntimeError(f'Mihomo failed to become ready; check log: {self.log_file}')
+            return self._record()['core']['pid']
+
+    def wait_until_ready(self, timeout: float = 5) -> bool:
+        import httpx
+        host, port = controller_address(self.store.load_config().external_controller)
+        url_host = f'[{host}]' if ':' in host else host
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                self.assert_api_owner()
+                with httpx.Client(trust_env=False, timeout=0.5) as client:
+                    response = client.get(f'http://{url_host}:{port}/version',
+                                          headers={'Authorization': 'Bearer ' + self.store.load_config().secret})
+                if response.status_code == 200 and isinstance(response.json().get('version'), str):
+                    self.assert_api_owner()
+                    return True
+            except (RuntimeError, OSError, ValueError, httpx.HTTPError):
+                pass
+            time.sleep(0.1)
+        return False
+
+    def _terminate_identity(self, identity: dict) -> bool:
+        if not matches(identity):
+            return False
+        fd = None
+        try:
+            if hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'):
+                fd = os.pidfd_open(identity['pid'])
+            if not matches(identity):
+                return False
+            def send(sig):
+                if fd is not None:
+                    signal.pidfd_send_signal(fd, sig)
+                elif matches(identity):
+                    os.kill(identity['pid'], sig)
+            send(signal.SIGTERM)
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                if not matches(identity):
+                    return True
+                time.sleep(0.1)
+            send(signal.SIGKILL)
+            return True
+        except ProcessLookupError:
+            return False
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def stop_direct(self) -> bool:
+        with self._lock():
+            record = self._record()
+            if record is None:
+                self.store.paths.pid_file.unlink(missing_ok=True)
+                return False
+            core_live = process_identity(record['core'].get('pid', 0))
+            if core_live is None and process_exists(record['core'].get('pid', 0)):
+                raise RuntimeError("Core identity cannot be read; refusing process operations.")
+            if core_live and not self._verified_core(record):
+                raise RuntimeError('Core PID was reused or identity changed; refusing to terminate it.')
+            runner = record.get('runner')
+            if runner and process_exists(runner.get('pid', 0)) and not self._verified_runner(runner):
+                raise RuntimeError('Runner identity changed; refusing to terminate it.')
+            stopped = False
+            if self._verified_runner(runner):
+                stopped = self._terminate_identity(runner)
+            if self._verified_core(record):
+                stopped = self._terminate_identity(record['core']) or stopped
+            self.store.paths.pid_file.unlink(missing_ok=True)
+            return stopped
 
     def start(self) -> str:
         self.start_direct()
-        return "ClashTX core started in direct process mode."
-
-    def start_direct(self) -> int:
-        if self.is_direct_active():
-            trim_log(self.log_file)
-            return self._read_pid() or 0
-        if not self.core.exists():
-            raise RuntimeError(f"Mihomo core is missing: {self.core.binary_path}")
-
-        self.ensure_runtime_config()
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        rotate_log(self.log_file)
-        log_handle = self.log_file.open("ab")
-        try:
-            process = subprocess.Popen(
-                self.core.build_command(),
-                stdout=log_handle,
-                stderr=log_handle,
-                start_new_session=True,
-            )
-        finally:
-            log_handle.close()
-
-        self.store.paths.pid_file.write_text(str(process.pid), encoding="utf-8")
-        if not self.wait_until_ready(timeout=8):
-            raise RuntimeError(
-                f"Mihomo started with pid {process.pid}, but API did not become ready. "
-                f"Check log: {self.log_file}"
-            )
-        return process.pid
-
-    def ensure_runtime_config(self) -> None:
-        ensure_geodata(self.store.paths.config_dir)
-        try:
-            from clashtx.subscription import SubscriptionManager
-
-            generated = SubscriptionManager(self.store).generate_runtime_config()
-            if generated.get("log-level") != "warning":
-                generated["log-level"] = "warning"
-                self.store.write_generated_config(generated)
-        except Exception:
-            if not self.store.paths.generated_config.exists():
-                self.store.write_generated_config(_base_mihomo_config(self.store.load_config()))
-
-    def wait_until_ready(self, timeout: float = 5) -> bool:
-        host, port = _split_host_port(self.store.load_config().external_controller)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not self.is_direct_active():
-                return False
-            try:
-                with socket.create_connection((host, port), timeout=0.5):
-                    return True
-            except OSError:
-                time.sleep(0.2)
-        return False
-
-    def stop_direct(self) -> bool:
-        pids = self._managed_pids()
-        pid = self._read_pid()
-        if pid and pid not in pids:
-            pids.append(pid)
-        if not pids:
-            self._clear_pid()
-            return False
-        stopped = False
-        for pid in pids:
-            stopped = self._terminate_pid(pid) or stopped
-        self._clear_pid()
-        return stopped
-
-    def _terminate_pid(self, pid: int) -> bool:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return False
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if not _pid_alive(pid):
-                return True
-            time.sleep(0.2)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        return True
-
-    def is_direct_active(self) -> bool:
-        pids = self._managed_pids()
-        if pids:
-            self.store.paths.pid_file.write_text(str(pids[0]), encoding="utf-8")
-            return True
-        pid = self._read_pid()
-        if pid and _pid_alive(pid):
-            return True
-        self._clear_pid()
-        return False
-
-    def _managed_pids(self) -> list[int]:
-        pids: list[int] = []
-        config_dir = str(self.store.paths.generated_config.parent)
-        config_file = str(self.store.paths.generated_config)
-        for proc_dir in Path("/proc").iterdir():
-            if not proc_dir.name.isdigit():
-                continue
-            try:
-                raw = (proc_dir / "cmdline").read_bytes()
-            except OSError:
-                continue
-            if not raw:
-                continue
-            parts = [part.decode("utf-8", "ignore") for part in raw.split(b"\0") if part]
-            if not parts:
-                continue
-            if config_dir in parts or config_file in parts:
-                pids.append(int(proc_dir.name))
-        return pids
-
-    def _read_pid(self) -> int | None:
-        try:
-            return int(self.store.paths.pid_file.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            return None
-
-    def _clear_pid(self) -> None:
-        try:
-            self.store.paths.pid_file.unlink()
-        except FileNotFoundError:
-            pass
+        return 'ClashTX core started with bounded background logging.'
 
     def stop(self) -> str:
-        stopped = self.stop_direct()
-        return "ClashTX core stopped." if stopped else "ClashTX core was not running."
+        return 'ClashTX core stopped.' if self.stop_direct() else 'ClashTX core was not running.'
 
     def restart(self) -> str:
-        self.stop_direct()
-        self.start_direct()
-        return "ClashTX core restarted in direct process mode."
+        with self._lock():
+            self.stop_direct()
+            self.start_direct()
+        return 'ClashTX core restarted with bounded background logging.'
 
     def status(self) -> ServiceStatus:
         active = self.is_direct_active()
-        if active:
-            trim_log(self.log_file)
-        pid = self._read_pid()
-        text = (
-            f"Direct process mode. PID: {pid}. "
-            f"Core: {self.core.binary_path}. "
-            f"API: {self.store.load_config().external_controller}. "
-            f"Log: {self.log_file}"
-        )
-        return ServiceStatus(
-            installed=self.core.exists(),
-            enabled=False,
-            active=active,
-            text=text,
-        )
-
-    def _unit_text(self) -> str:
-        command = " ".join(_quote(part) for part in self.core.build_command())
-        return f"""[Unit]
-Description=ClashTX Mihomo Core
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart={command}
-Restart=on-failure
-RestartSec=3
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-StandardOutput=append:{self.log_file}
-StandardError=append:{self.log_file}
-
-[Install]
-WantedBy=default.target
-"""
-
-    def _legacy_start(self) -> str:
-        if not self.service_path.exists():
-            self.install()
-        _systemctl("start", SERVICE_NAME)
-        return "ClashTX service started."
-
-
-def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["systemctl", "--user", *args],
-        check=check,
-        capture_output=True,
-        text=True,
-    )
-
-
-def _systemd_available() -> bool:
-    try:
-        completed = _systemctl("show-environment", check=False)
-    except FileNotFoundError:
-        return False
-    return completed.returncode == 0
-
-
-def _quote(value: str) -> str:
-    return "'" + value.replace("'", "'\\''") + "'"
-
-
-def _base_mihomo_config(config) -> dict:
-    return {
-        "mixed-port": config.mixed_port,
-        "allow-lan": False,
-        "mode": {"rule": "rule", "global": "global", "direct": "direct"}[config.proxy_mode],
-        "log-level": "warning",
-        "geo-auto-update": False,
-        "external-controller": config.external_controller,
-        "secret": config.secret,
-        "tun": {
-            "enable": config.tun_enabled,
-            "stack": "system",
-            "auto-route": True,
-            "auto-detect-interface": True,
-        },
-    }
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _split_host_port(value: str) -> tuple[str, int]:
-    host, _, port = value.rpartition(":")
-    if not host or not port:
-        return "127.0.0.1", 9090
-    return host, int(port)
+        try:
+            record = self._record()
+            text = f"Verified process mode. PID: {record['core']['pid'] if active else 'none'}. Log: {self.log_file}"
+            if active and not record.get('runner'):
+                text += ' | Legacy core: restart explicitly to enable bounded logging.'
+        except RuntimeError as exc:
+            text = str(exc)
+        return ServiceStatus(self.core.exists(), False, active, text)

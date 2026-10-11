@@ -480,3 +480,9 @@ tbody tr.selected { background: rgba(97, 175, 239, 0.12); }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
   .nav { flex-direction: row; flex-wrap: wrap; }
 }
+
+[hidden] { display: none !important; }
+.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.login-card { width: min(400px, 100%); display: grid; gap: 16px; }
+.login-card h1, .login-card p { margin: 0; }
+#login-error { color: #ef4444; min-height: 1.5em; }

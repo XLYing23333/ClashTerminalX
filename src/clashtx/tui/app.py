@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from clashtx import AUTHOR
 from clashtx.config import ConfigStore
+from clashtx.config.locking import config_transaction
 from clashtx.core import CoreManager
 from clashtx.mihomo import MihomoAPI
 from clashtx.controller import (
@@ -274,6 +275,7 @@ class ClashTXApp(App):
         if event.tab.id == "subscriptions":
             self.refresh_subscriptions()
 
+    @config_transaction
     def on_select_changed(self, event: Select.Changed) -> None:
         config = self.store.load_config()
         if event.select.id == "group-select":
@@ -412,6 +414,8 @@ class ClashTXApp(App):
         )
 
     def refresh_subscriptions(self) -> None:
+        if self.store.load_config().migration_warnings:
+            self.status_text = " | ".join(self.store.load_config().migration_warnings)
         table = self.query_one("#sub-table", DataTable)
         table.clear()
         config = self.store.load_config()
@@ -777,6 +781,8 @@ class ClashTXApp(App):
         self.status_text = f"Selected subscription: {self.selected_subscription_name}"
 
     def _reload_config_message(self) -> str:
+        if not self.service.status().active:
+            return "Config saved. Start the ClashTX core to apply it."
         try:
             self.api.reload_config()
             return "Mihomo config reloaded."
